@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=create_ap GUI
+Comment=GUI launcher for create_ap hotspot tool
+Exec=create_ap_gui
+Terminal=false
+Categories=Network;Utility;
+StartupNotify=true

@@ -4,7 +4,9 @@ BINDIR=$(PREFIX)/bin
 
 all:
 	@echo "Run 'make install' for installation."
+	@echo "Run 'make install-gui' for GUI installation."
 	@echo "Run 'make uninstall' for uninstallation."
+	@echo "Run 'make uninstall-gui' for GUI uninstallation."
 
 install:
 	install -Dm755 create_ap $(DESTDIR)$(BINDIR)/create_ap
@@ -14,6 +16,10 @@ install:
 	install -Dm644 bash_completion $(DESTDIR)$(PREFIX)/share/bash-completion/completions/create_ap
 	install -Dm644 README.md $(DESTDIR)$(PREFIX)/share/doc/create_ap/README.md
 
+install-gui:
+	install -Dm755 create_ap_gui.py $(DESTDIR)$(BINDIR)/create_ap_gui
+	install -Dm644 create_ap_gui.desktop $(DESTDIR)$(PREFIX)/share/applications/create_ap_gui.desktop
+
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/create_ap
 	rm -f $(DESTDIR)/etc/create_ap.conf
@@ -21,3 +27,7 @@ uninstall:
 	[ ! -e /sbin/openrc-run ] || rm -f $(DESTDIR)/etc/init.d/create_ap
 	rm -f $(DESTDIR)$(PREFIX)/share/bash-completion/completions/create_ap
 	rm -f $(DESTDIR)$(PREFIX)/share/doc/create_ap/README.md
+
+uninstall-gui:
+	rm -f $(DESTDIR)$(BINDIR)/create_ap_gui
+	rm -f $(DESTDIR)$(PREFIX)/share/applications/create_ap_gui.desktop
