@@ -5,5 +5,6 @@ Name=create_ap GUI
 Comment=GUI launcher for create_ap hotspot tool
 Exec=create_ap_gui
 Terminal=false
+Icon=create_ap_gui
 Categories=Network;Utility;
 StartupNotify=true

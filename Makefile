@@ -19,6 +19,8 @@ install:
 install-gui:
 	install -Dm755 create_ap_gui.py $(DESTDIR)$(BINDIR)/create_ap_gui
 	install -Dm644 create_ap_gui.desktop $(DESTDIR)$(PREFIX)/share/applications/create_ap_gui.desktop
+	install -Dm644 create_ap_gui.svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/create_ap_gui.svg
+	install -Dm644 create_ap_gui.png $(DESTDIR)$(PREFIX)/share/icons/hicolor/128x128/apps/create_ap_gui.png
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/create_ap
@@ -31,3 +33,5 @@ uninstall:
 uninstall-gui:
 	rm -f $(DESTDIR)$(BINDIR)/create_ap_gui
 	rm -f $(DESTDIR)$(PREFIX)/share/applications/create_ap_gui.desktop
+	rm -f $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/create_ap_gui.svg
+	rm -f $(DESTDIR)$(PREFIX)/share/icons/hicolor/128x128/apps/create_ap_gui.png

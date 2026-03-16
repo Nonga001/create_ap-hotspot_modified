@@ -8,6 +8,7 @@ import shutil
 import socket
 import signal
 import subprocess
+import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -25,13 +26,19 @@ class CreateApGui:
         self.process: subprocess.Popen[str] | None = None
         self.clients_window: tk.Toplevel | None = None
         self.clients_tree: ttk.Treeview | None = None
+        self.qr_window: tk.Toplevel | None = None
+        self.qr_image: tk.PhotoImage | None = None
         self.auto_retry_no_virt_attempted = False
         self.instance_check_done = False
         self.external_running = False
         self.external_running_ifaces: list[str] = []
+        self.running_ap_settings: dict[str, object] | None = None
         self.instance_status = tk.StringVar(value="Instance check pending")
         self.last_applied_settings: dict[str, object] = {}
-        self.profile_path = Path.home() / ".config" / "create_ap" / "gui_profile.json"
+        self.profile_dir = Path.home() / ".config" / "create_ap" / "profiles"
+        self.legacy_profile_path = Path.home() / ".config" / "create_ap" / "gui_profile.json"
+        self.profile_name = tk.StringVar(value="default")
+        self.profile_listbox: tk.Listbox | None = None
 
         self.wifi_iface = tk.StringVar(value="wlan0")
         self.internet_iface = tk.StringVar(value="eth0")
@@ -51,6 +58,7 @@ class CreateApGui:
 
         self.create_ap_bin = self._resolve_create_ap_binary()
         self._apply_system_defaults()
+        self._migrate_legacy_profile_if_needed()
 
         self._build_ui()
         self._refresh_interfaces()
@@ -153,6 +161,7 @@ class CreateApGui:
         ttk.Label(cfg, text="WiFi interface").grid(row=row, column=0, sticky=tk.W, padx=4, pady=4)
         self.wifi_combo = ttk.Combobox(cfg, textvariable=self.wifi_iface, state="readonly")
         self.wifi_combo.grid(row=row, column=1, sticky=tk.EW, padx=4, pady=4)
+        self.wifi_combo.bind("<<ComboboxSelected>>", lambda _: self._load_selected_running_settings())
 
         ttk.Label(cfg, text="Internet interface").grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
         self.internet_combo = ttk.Combobox(cfg, textvariable=self.internet_iface, state="readonly")
@@ -223,24 +232,47 @@ class CreateApGui:
         buttons = ttk.Frame(main, padding=(0, 10, 0, 10))
         buttons.pack(fill=tk.X)
 
-        self.start_button = ttk.Button(buttons, text="Start AP", command=self.start_ap)
+        row1 = ttk.Frame(buttons)
+        row1.pack(fill=tk.X, pady=(0, 6))
+        row2 = ttk.Frame(buttons)
+        row2.pack(fill=tk.X)
+
+        self.start_button = ttk.Button(row1, text="Start AP", command=self.start_ap)
         self.start_button.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.stop_button = ttk.Button(buttons, text="Stop AP", command=self.stop_ap)
+        self.stop_button = ttk.Button(row1, text="Stop AP", command=self.stop_ap)
         self.stop_button.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.apply_button = ttk.Button(buttons, text="Apply changes", command=self.apply_changes)
+        self.apply_button = ttk.Button(row1, text="Apply changes", command=self.apply_changes)
         self.apply_button.pack(side=tk.LEFT, padx=(0, 8))
 
-        ttk.Button(buttons, text="Preflight", command=lambda: self.preflight_check(show_success=True)).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(buttons, text="Check instances", command=self.check_running_instances).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(buttons, text="Refresh interfaces", command=self._refresh_interfaces).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(buttons, text="Show running", command=self.show_running).pack(side=tk.LEFT, padx=(0, 8))
-        self.show_clients_button = ttk.Button(buttons, text="Show clients", command=self.show_clients)
+        ttk.Button(row1, text="Preflight", command=lambda: self.preflight_check(show_success=True)).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(row1, text="Check instances", command=self.check_running_instances).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(row1, text="Refresh interfaces", command=self._refresh_interfaces).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(row1, text="Show running", command=self.show_running).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(row1, text="Clear log", command=self.clear_log).pack(side=tk.RIGHT)
+
+        self.show_clients_button = ttk.Button(row2, text="Show clients", command=self.show_clients)
         self.show_clients_button.pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(buttons, text="Save profile", command=self.save_profile).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(buttons, text="Load profile", command=self.load_profile).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(buttons, text="Clear log", command=self.clear_log).pack(side=tk.RIGHT)
+        ttk.Button(row2, text="Show QR", command=self.show_qr_code).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(row2, text="Load Running AP", command=self.load_running_ap).pack(side=tk.LEFT, padx=(0, 8))
+
+        profiles = ttk.LabelFrame(main, text="Saved Profiles", padding=8)
+        profiles.pack(fill=tk.X, pady=(0, 8))
+
+        profile_controls = ttk.Frame(profiles)
+        profile_controls.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(profile_controls, text="Profile name").pack(side=tk.LEFT)
+        ttk.Entry(profile_controls, textvariable=self.profile_name, width=22).pack(side=tk.LEFT, padx=(8, 10))
+        ttk.Button(profile_controls, text="Save/Update", command=self.save_profile).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(profile_controls, text="Load", command=self.load_profile).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(profile_controls, text="Delete", command=self.clear_profile).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(profile_controls, text="Refresh", command=self._refresh_profile_list).pack(side=tk.LEFT)
+
+        self.profile_listbox = tk.Listbox(profiles, height=4, exportselection=False)
+        self.profile_listbox.pack(fill=tk.X)
+        self.profile_listbox.bind("<<ListboxSelect>>", self._on_profile_selected)
+        self._refresh_profile_list()
 
         status = ttk.Frame(main)
         status.pack(fill=tk.X, pady=(0, 8))
@@ -253,6 +285,67 @@ class CreateApGui:
         self.log.pack(fill=tk.BOTH, expand=True)
 
         self._toggle_internet_iface_state()
+
+    def _sanitize_profile_name(self, raw_name: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_name.strip())
+        cleaned = cleaned.strip("._-")
+        return cleaned or "default"
+
+    def _profile_path(self, profile_name: str) -> Path:
+        safe = self._sanitize_profile_name(profile_name)
+        return self.profile_dir / f"{safe}.json"
+
+    def _selected_profile_path(self) -> Path:
+        selected_name = self._sanitize_profile_name(self.profile_name.get())
+        self.profile_name.set(selected_name)
+        return self._profile_path(selected_name)
+
+    def _list_profile_names(self) -> list[str]:
+        if not self.profile_dir.is_dir():
+            return []
+        names: list[str] = []
+        for item in sorted(self.profile_dir.glob("*.json")):
+            names.append(item.stem)
+        return names
+
+    def _refresh_profile_list(self) -> None:
+        if self.profile_listbox is None:
+            return
+
+        current = self._sanitize_profile_name(self.profile_name.get())
+        names = self._list_profile_names()
+        self.profile_listbox.delete(0, tk.END)
+        for name in names:
+            self.profile_listbox.insert(tk.END, name)
+
+        if current in names:
+            idx = names.index(current)
+            self.profile_listbox.selection_set(idx)
+            self.profile_listbox.activate(idx)
+        elif names:
+            self.profile_name.set(names[0])
+            self.profile_listbox.selection_set(0)
+            self.profile_listbox.activate(0)
+
+    def _on_profile_selected(self, _event: object) -> None:
+        if self.profile_listbox is None:
+            return
+        selected = self.profile_listbox.curselection()
+        if not selected:
+            return
+        name = self.profile_listbox.get(selected[0])
+        self.profile_name.set(name)
+
+    def _migrate_legacy_profile_if_needed(self) -> None:
+        if not self.legacy_profile_path.is_file():
+            return
+        try:
+            self.profile_dir.mkdir(parents=True, exist_ok=True)
+            default_path = self._profile_path("default")
+            if not default_path.exists():
+                shutil.copy2(self.legacy_profile_path, default_path)
+        except OSError:
+            return
 
     def _toggle_internet_iface_state(self) -> None:
         if self.share_method.get() == "none":
@@ -449,22 +542,239 @@ class CreateApGui:
         self.no_virt.set(bool(profile.get("no_virt", self.no_virt.get())))
         self._toggle_internet_iface_state()
 
-    def save_profile(self) -> None:
+    def _running_confdirs(self) -> list[Path]:
+        confdirs: list[Path] = []
+        for path in Path("/tmp").glob("create_ap.*"):
+            try:
+                pid_file = path / "pid"
+                wifi_file = path / "wifi_iface"
+                if not (pid_file.is_file() and wifi_file.is_file()):
+                    continue
+                pid = pid_file.read_text(encoding="utf-8").strip()
+            except (OSError, PermissionError):
+                continue
+            if pid.isdigit() and Path(f"/proc/{pid}").exists():
+                confdirs.append(path)
+        return confdirs
+
+    def _find_running_confdir(self, wifi_iface: str) -> Path | None:
+        for confdir in self._running_confdirs():
+            if confdir.name.startswith(f"create_ap.{wifi_iface}.conf."):
+                return confdir
+            try:
+                current_iface = (confdir / "wifi_iface").read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if current_iface == wifi_iface:
+                return confdir
+        return None
+
+    def _parse_cmdline_settings(self, pid: str) -> dict[str, object]:
+        settings: dict[str, object] = {}
         try:
-            self.profile_path.parent.mkdir(parents=True, exist_ok=True)
-            self.profile_path.write_text(json.dumps(self._profile_data(), indent=2), encoding="utf-8")
-            self.log_queue.put(f"\n[Profile saved] {self.profile_path}\n")
-            messagebox.showinfo("create_ap", f"Profile saved to:\n{self.profile_path}")
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return settings
+
+        args = [part.decode("utf-8", errors="ignore") for part in raw.split(b"\0") if part]
+        if not args:
+            return settings
+
+        if len(args) >= 2 and Path(args[0]).name in {"bash", "sh", "dash"} and (Path(args[1]).name == "create_ap" or args[1].endswith("/create_ap")):
+            filtered = args[2:]
+        elif Path(args[0]).name == "create_ap" or args[0].endswith("/create_ap"):
+            filtered = args[1:]
+        else:
+            filtered = args[1:]
+
+        share_method = "nat"
+        positional: list[str] = []
+        index = 0
+        while index < len(filtered):
+            arg = filtered[index]
+            if arg == "-n":
+                share_method = "none"
+            elif arg == "-m" and index + 1 < len(filtered):
+                share_method = filtered[index + 1]
+                index += 1
+            elif arg == "-c" and index + 1 < len(filtered):
+                settings["channel"] = filtered[index + 1]
+                index += 1
+            elif arg == "-w" and index + 1 < len(filtered):
+                settings["wpa_version"] = filtered[index + 1]
+                index += 1
+            elif arg == "--freq-band" and index + 1 < len(filtered):
+                settings["freq_band"] = filtered[index + 1]
+                index += 1
+            elif arg == "--driver" and index + 1 < len(filtered):
+                settings["driver"] = filtered[index + 1]
+                index += 1
+            elif arg == "--country" and index + 1 < len(filtered):
+                settings["country"] = filtered[index + 1]
+                index += 1
+            elif arg == "--hidden":
+                settings["hidden"] = True
+            elif arg == "--isolate-clients":
+                settings["isolate_clients"] = True
+            elif arg == "--no-virt":
+                settings["no_virt"] = True
+            elif arg.startswith("-"):
+                if arg in {"--hostapd-debug", "--mac-filter-accept", "--ht_capab", "--vht_capab", "--mac", "--dhcp-dns", "-g", "-e", "--pidfile", "--logfile", "--stop", "--list-clients", "--mkconfig", "--config"} and index + 1 < len(filtered):
+                    index += 1
+            else:
+                positional.append(arg)
+            index += 1
+
+        settings["share_method"] = share_method
+        if share_method == "none":
+            if len(positional) >= 1:
+                settings["wifi_iface"] = positional[0]
+            if len(positional) >= 2:
+                settings["ssid"] = positional[1]
+            if len(positional) >= 3:
+                settings["passphrase"] = positional[2]
+        else:
+            if len(positional) >= 1:
+                settings["wifi_iface"] = positional[0]
+            if len(positional) >= 2:
+                settings["internet_iface"] = positional[1]
+            if len(positional) >= 3:
+                settings["ssid"] = positional[2]
+            if len(positional) >= 4:
+                settings["passphrase"] = positional[3]
+
+        return settings
+
+    def _parse_hostapd_settings(self, confdir: Path) -> dict[str, object]:
+        settings: dict[str, object] = {}
+        hostapd_conf = confdir / "hostapd.conf"
+        if not hostapd_conf.is_file():
+            return settings
+        try:
+            lines = hostapd_conf.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            return settings
+
+        data: dict[str, str] = {}
+        for line in lines:
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            data[key.strip()] = value.strip()
+
+        if "ssid" in data:
+            settings["ssid"] = data["ssid"]
+        if "interface" in data:
+            settings["wifi_iface"] = data["interface"]
+        if "driver" in data:
+            settings["driver"] = data["driver"]
+        if "channel" in data:
+            settings["channel"] = data["channel"]
+        if data.get("ignore_broadcast_ssid") == "1":
+            settings["hidden"] = True
+        if data.get("ap_isolate") == "1":
+            settings["isolate_clients"] = True
+        if "country_code" in data:
+            settings["country"] = data["country_code"]
+        if "hw_mode" in data:
+            settings["freq_band"] = "5" if data["hw_mode"] == "a" else "2.4"
+        if data.get("bridge"):
+            settings["share_method"] = "bridge"
+        if "wpa_passphrase" in data:
+            settings["passphrase"] = data["wpa_passphrase"]
+        if "wpa" in data:
+            settings["wpa_version"] = "1+2" if data["wpa"] == "3" else data["wpa"]
+        return settings
+
+    def _read_running_ap_settings(self, wifi_iface: str) -> dict[str, object] | None:
+        confdir = self._find_running_confdir(wifi_iface)
+        if confdir is None:
+            return None
+
+        settings: dict[str, object] = {
+            "hidden": False,
+            "isolate_clients": False,
+            "no_virt": False,
+        }
+        try:
+            pid = (confdir / "pid").read_text(encoding="utf-8").strip()
+        except OSError:
+            pid = ""
+
+        settings.update(self._parse_hostapd_settings(confdir))
+        if pid:
+            settings.update(self._parse_cmdline_settings(pid))
+
+        if settings.get("share_method") != "bridge" and (confdir / "dnsmasq.conf").is_file() and "share_method" not in settings:
+            settings["share_method"] = "nat"
+
+        settings.setdefault("wifi_iface", wifi_iface)
+        return settings
+
+    def _apply_running_ap_settings(self, wifi_iface: str) -> None:
+        settings = self._read_running_ap_settings(wifi_iface)
+        if not settings:
+            self.running_ap_settings = None
+            return
+
+        self.running_ap_settings = settings
+        self._apply_profile(settings)
+        self._mark_current_settings_as_applied()
+
+    def _load_selected_running_settings(self) -> None:
+        wifi_iface = self.wifi_iface.get().strip()
+        if wifi_iface and (wifi_iface in self.external_running_ifaces or self._find_running_confdir(wifi_iface) is not None):
+            self._apply_running_ap_settings(wifi_iface)
+
+    def load_running_ap(self) -> None:
+        """Explicitly load settings from any currently running AP into the form."""
+        confdirs = self._running_confdirs()
+        if not confdirs:
+            messagebox.showinfo("create_ap", "No running create_ap instance found.\nStart a hotspot first, then click Load Running AP.")
+            return
+
+        # Prefer the interface already selected in the form
+        wifi_iface = self.wifi_iface.get().strip()
+        confdir = self._find_running_confdir(wifi_iface) if wifi_iface else None
+        if confdir is None:
+            # Fall back to first running interface
+            first = confdirs[0]
+            iface_file = first / "wifi_iface"
+            wifi_iface = iface_file.read_text(encoding="utf-8").strip() if iface_file.is_file() else ""
+
+        if not wifi_iface:
+            messagebox.showerror("create_ap", "Could not determine the running AP interface.")
+            return
+
+        self._apply_running_ap_settings(wifi_iface)
+
+        if self.running_ap_settings:
+            ssid = self.running_ap_settings.get("ssid", "unknown")
+            self.instance_status.set(f"Loaded running AP settings — SSID: {ssid} (iface: {wifi_iface})")
+            self.log_queue.put(f"\n[Load Running AP] Loaded settings from running AP on {wifi_iface} (SSID: {ssid})\n")
+            messagebox.showinfo("create_ap", f"Loaded settings from running AP:\n  Interface: {wifi_iface}\n  SSID: {ssid}")
+        else:
+            messagebox.showwarning("create_ap", f"Found a running AP on {wifi_iface} but could not read its settings.\nThe AP may have been started externally or the config files are not accessible.")
+
+    def save_profile(self) -> None:
+        path = self._selected_profile_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(self._profile_data(), indent=2), encoding="utf-8")
+            self.log_queue.put(f"\n[Profile saved] {path}\n")
+            self._refresh_profile_list()
+            messagebox.showinfo("create_ap", f"Profile saved:\n{path}")
         except OSError as exc:
             messagebox.showerror("create_ap", f"Failed to save profile: {exc}")
 
     def load_profile(self) -> None:
-        if not self.profile_path.is_file():
-            messagebox.showerror("create_ap", f"Profile not found:\n{self.profile_path}")
+        path = self._selected_profile_path()
+        if not path.is_file():
+            messagebox.showerror("create_ap", f"Profile not found:\n{path}")
             return
 
         try:
-            profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
+            profile = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             messagebox.showerror("create_ap", f"Failed to load profile: {exc}")
             return
@@ -474,8 +784,30 @@ class CreateApGui:
             return
 
         self._apply_profile(profile)
-        self.log_queue.put(f"\n[Profile loaded] {self.profile_path}\n")
+        self.log_queue.put(f"\n[Profile loaded] {path}\n")
         messagebox.showinfo("create_ap", "Profile loaded")
+
+    def clear_profile(self) -> None:
+        path = self._selected_profile_path()
+        if not path.is_file():
+            messagebox.showinfo("create_ap", "No saved profile to clear")
+            return
+
+        confirmed = messagebox.askyesno(
+            "create_ap",
+            f"Delete saved profile '{path.stem}'?\n\n{path}",
+            icon="warning",
+        )
+        if not confirmed:
+            return
+
+        try:
+            path.unlink()
+            self.log_queue.put(f"\n[Profile deleted] {path}\n")
+            self._refresh_profile_list()
+            messagebox.showinfo("create_ap", "Saved profile deleted")
+        except OSError as exc:
+            messagebox.showerror("create_ap", f"Failed to clear profile: {exc}")
 
     def _append_log(self, text: str) -> None:
         self.log.configure(state=tk.NORMAL)
@@ -517,11 +849,31 @@ class CreateApGui:
             if not text or text.startswith("List of running"):
                 continue
             if re.match(r"^[0-9]+\s+", text):
-                parts = text.split()
-                if len(parts) >= 2:
+                match = re.match(r"^[0-9]+\s+\S+(?:\s+\(([^)]+)\))?$", text)
+                if not match:
+                    continue
+                if match.group(1):
+                    iface = match.group(1).strip()
+                else:
+                    parts = text.split()
+                    if len(parts) < 2:
+                        continue
                     iface = parts[1]
+                if iface and iface not in ifaces:
                     ifaces.append(iface)
         return ifaces
+
+    def _effective_running_iface(self) -> str:
+        wifi = self.wifi_iface.get().strip()
+        if not self.external_running:
+            return wifi
+        if wifi in self.external_running_ifaces:
+            return wifi
+        if len(self.external_running_ifaces) == 1:
+            selected = self.external_running_ifaces[0]
+            self.wifi_iface.set(selected)
+            return selected
+        return wifi
 
     def _apply_instance_check_result(self, returncode: int, output: str, error: str) -> None:
         if returncode != 0:
@@ -543,8 +895,10 @@ class CreateApGui:
             self.instance_status.set("Detected running AP instance(s): " + ", ".join(running_ifaces))
             if self.wifi_iface.get().strip() not in running_ifaces:
                 self.wifi_iface.set(running_ifaces[0])
+            self._apply_running_ap_settings(self.wifi_iface.get().strip())
         else:
             self.instance_status.set("No running create_ap instance detected")
+            self.running_ap_settings = None
 
         self._mark_current_settings_as_applied()
         self._set_running_ui(False)
@@ -709,7 +1063,7 @@ class CreateApGui:
             messagebox.showerror("create_ap", "create_ap binary not found")
             return
 
-        wifi = self.wifi_iface.get().strip()
+        wifi = self._effective_running_iface()
         if not wifi:
             messagebox.showerror("create_ap", "WiFi interface is required to stop a running instance")
             return
@@ -813,13 +1167,121 @@ class CreateApGui:
             messagebox.showerror("create_ap", "create_ap binary not found")
             return
 
-        wifi = self.wifi_iface.get().strip()
+        wifi = self._effective_running_iface()
         if not wifi:
             messagebox.showerror("create_ap", "Select a WiFi interface first")
             return
 
         cmd = self._auth_prefix() + [self.create_ap_bin, "--list-clients", wifi]
         threading.Thread(target=self._fetch_and_render_clients, args=(cmd,), daemon=True).start()
+
+    def _escape_wifi_qr_value(self, value: str) -> str:
+        escaped = value.replace("\\", "\\\\")
+        escaped = escaped.replace(";", "\\;")
+        escaped = escaped.replace(",", "\\,")
+        escaped = escaped.replace(":", "\\:")
+        escaped = escaped.replace('"', '\\"')
+        return escaped
+
+    def _wifi_qr_payload(self) -> str:
+        source_settings = self._settings_snapshot()
+        if self.external_running and self.running_ap_settings:
+            source_settings = {**source_settings, **self.running_ap_settings}
+
+        ssid = str(source_settings.get("ssid", "")).strip()
+        passphrase = str(source_settings.get("passphrase", "")).strip()
+        hidden = bool(source_settings.get("hidden", False))
+
+        if not ssid:
+            raise ValueError("SSID is required before generating a QR code")
+
+        auth = "nopass"
+        payload = [f"WIFI:T:{auth}", f"S:{self._escape_wifi_qr_value(ssid)}"]
+
+        if passphrase:
+            auth = "WPA"
+            payload[0] = f"WIFI:T:{auth}"
+            payload.append(f"P:{self._escape_wifi_qr_value(passphrase)}")
+
+        if hidden:
+            payload.append("H:true")
+
+        return ";".join(payload) + ";;"
+
+    def _render_qr_window(self, image_path: str, payload: str) -> None:
+        if self.qr_window is None or not self.qr_window.winfo_exists():
+            self.qr_window = tk.Toplevel(self.root)
+            self.qr_window.title("Hotspot QR Code")
+            self.qr_window.geometry("420x520")
+
+            frame = ttk.Frame(self.qr_window, padding=12)
+            frame.pack(fill=tk.BOTH, expand=True)
+
+            qr_label = ttk.Label(frame)
+            qr_label.pack(pady=(0, 12))
+
+            info_label = ttk.Label(
+                frame,
+                text="Scan this code from another device to join the hotspot.",
+                justify=tk.CENTER,
+            )
+            info_label.pack(pady=(0, 8))
+
+            payload_text = tk.Text(frame, height=5, wrap=tk.WORD)
+            payload_text.pack(fill=tk.X, pady=(0, 8))
+            payload_text.insert("1.0", payload)
+            payload_text.configure(state=tk.DISABLED)
+
+            ttk.Button(frame, text="Close", command=self.qr_window.destroy).pack(side=tk.BOTTOM)
+
+            self.qr_window.qr_label = qr_label  # type: ignore[attr-defined]
+            self.qr_window.payload_text = payload_text  # type: ignore[attr-defined]
+
+        self.qr_image = tk.PhotoImage(file=image_path)
+        qr_label = self.qr_window.qr_label  # type: ignore[attr-defined]
+        payload_text = self.qr_window.payload_text  # type: ignore[attr-defined]
+        qr_label.configure(image=self.qr_image)
+        payload_text.configure(state=tk.NORMAL)
+        payload_text.delete("1.0", tk.END)
+        payload_text.insert("1.0", payload)
+        payload_text.configure(state=tk.DISABLED)
+        self.qr_window.lift()
+        self.qr_window.focus_force()
+
+    def show_qr_code(self) -> None:
+        if shutil.which("qrencode") is None:
+            messagebox.showerror(
+                "create_ap",
+                "qrencode is not installed. Install it first to generate hotspot QR codes.",
+            )
+            return
+
+        try:
+            payload = self._wifi_qr_payload()
+        except ValueError as exc:
+            messagebox.showerror("create_ap", str(exc))
+            return
+
+        temp_dir = Path(tempfile.gettempdir())
+        image_path = temp_dir / "create_ap_wifi_qr.png"
+        cmd = ["qrencode", "-o", str(image_path), "-s", "8", payload]
+        self.log_queue.put("\n$ " + " ".join(cmd) + "\n")
+
+        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if completed.stdout:
+            self.log_queue.put(completed.stdout)
+        if completed.stderr:
+            self.log_queue.put(completed.stderr)
+        self.log_queue.put(f"[exit code {completed.returncode}]\n")
+
+        if completed.returncode != 0 or not image_path.is_file():
+            messagebox.showerror("create_ap", "Failed to generate QR code. Check log output.")
+            return
+
+        try:
+            self._render_qr_window(str(image_path), payload)
+        except tk.TclError as exc:
+            messagebox.showerror("create_ap", f"Failed to display QR code: {exc}")
 
     def clear_log(self) -> None:
         self.log.configure(state=tk.NORMAL)
