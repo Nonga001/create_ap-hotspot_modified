@@ -1140,24 +1140,79 @@ class CreateApGui:
         self.clients_window.lift()
         self.clients_window.focus_force()
 
-    def _fetch_and_render_clients(self, cmd: list[str]) -> None:
-        self.log_queue.put("\n$ " + " ".join(cmd) + "\n")
+    def _virtual_iface_hint_detected(self, output: str) -> bool:
+        markers = [
+            "ERROR: '",
+            "is not used from create_ap instance",
+            "Maybe you need to pass the virtual interface instead.",
+        ]
+        return all(marker in output for marker in markers)
+
+    def _clients_iface_candidates(self, selected_iface: str) -> list[str]:
+        candidates: list[str] = []
+
+        def _add_candidate(iface: str) -> None:
+            iface = iface.strip()
+            if iface and iface not in candidates:
+                candidates.append(iface)
+
+        _add_candidate(selected_iface)
+
+        effective_iface = self._effective_running_iface()
+        _add_candidate(effective_iface)
+
+        if self.running_ap_settings:
+            running_iface = str(self.running_ap_settings.get("wifi_iface", "")).strip()
+            _add_candidate(running_iface)
+
+        confdir = self._find_running_confdir(selected_iface)
+        if confdir is not None:
+            hostapd_iface = str(self._parse_hostapd_settings(confdir).get("wifi_iface", "")).strip()
+            _add_candidate(hostapd_iface)
+
+        return candidates
+
+    def _fetch_and_render_clients(self, ifaces: list[str]) -> None:
         try:
-            completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            out = completed.stdout or ""
-            err = completed.stderr or ""
-            if out:
-                self.log_queue.put(out)
-            if err:
-                self.log_queue.put(err)
-            self.log_queue.put(f"[exit code {completed.returncode}]\n")
+            last_out = ""
+            last_err = ""
+            last_rc = 1
 
-            if completed.returncode != 0:
-                self.root.after(0, lambda: messagebox.showerror("create_ap", "Failed to list connected clients. Check log output."))
-                return
+            for index, iface in enumerate(ifaces):
+                cmd = self._auth_prefix() + [self.create_ap_bin, "--list-clients", iface]
+                self.log_queue.put("\n$ " + " ".join(cmd) + "\n")
+                completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                out = completed.stdout or ""
+                err = completed.stderr or ""
+                if out:
+                    self.log_queue.put(out)
+                if err:
+                    self.log_queue.put(err)
+                self.log_queue.put(f"[exit code {completed.returncode}]\n")
 
-            clients = self._parse_clients_output(out)
-            self.root.after(0, lambda: self._render_clients_window(clients))
+                last_out = out
+                last_err = err
+                last_rc = completed.returncode
+
+                if completed.returncode == 0:
+                    if self.wifi_iface.get().strip() != iface:
+                        self.wifi_iface.set(iface)
+                    clients = self._parse_clients_output(out)
+                    self.root.after(0, lambda: self._render_clients_window(clients))
+                    return
+
+                combined = f"{out}\n{err}"
+                should_retry = self._virtual_iface_hint_detected(combined)
+                if should_retry and index + 1 < len(ifaces):
+                    next_iface = ifaces[index + 1]
+                    self.log_queue.put(f"[Retrying --list-clients with interface: {next_iface}]\n")
+                    continue
+                break
+
+            detail = f"\n\nLast exit code: {last_rc}" if last_rc is not None else ""
+            if last_err.strip() or last_out.strip():
+                detail += "\nCheck log output for details."
+            self.root.after(0, lambda: messagebox.showerror("create_ap", "Failed to list connected clients." + detail))
         except Exception as exc:
             self.log_queue.put(f"Command failed: {exc}\n")
             self.root.after(0, lambda: messagebox.showerror("create_ap", f"Failed to list clients: {exc}"))
@@ -1172,8 +1227,8 @@ class CreateApGui:
             messagebox.showerror("create_ap", "Select a WiFi interface first")
             return
 
-        cmd = self._auth_prefix() + [self.create_ap_bin, "--list-clients", wifi]
-        threading.Thread(target=self._fetch_and_render_clients, args=(cmd,), daemon=True).start()
+        iface_candidates = self._clients_iface_candidates(wifi)
+        threading.Thread(target=self._fetch_and_render_clients, args=(iface_candidates,), daemon=True).start()
 
     def _escape_wifi_qr_value(self, value: str) -> str:
         escaped = value.replace("\\", "\\\\")
