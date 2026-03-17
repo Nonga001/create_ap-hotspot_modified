@@ -1048,16 +1048,61 @@ class CreateApGui:
         except Exception as exc:
             self.log_queue.put(f"Command failed: {exc}\n")
 
+    def _recheck_after_stop(self, attempts_left: int = 6) -> None:
+        """Poll --list-running until the hotspot is gone, then update the UI.
+
+        create_ap --stop sends SIGUSR1 and returns immediately; the actual
+        teardown (hostapd, dnsmasq, iptables) takes several more seconds.
+        A single fixed-delay check often fires too early and incorrectly
+        leaves the AP marked as still-running, keeping Start AP disabled.
+        This method retries up to `attempts_left` times (every 2.5 s).
+        """
+        if not self.create_ap_bin:
+            return
+
+        def _worker() -> None:
+            cmd = [self.create_ap_bin, "--list-running"]
+            completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            out = completed.stdout or ""
+            err = completed.stderr or ""
+            running_ifaces = self._parse_running_instances(out)
+
+            if running_ifaces and attempts_left > 1:
+                # AP is still shutting down — schedule another check.
+                remaining = attempts_left - 1
+                self.log_queue.put(f"[AP still stopping, retrying… ({remaining} attempt(s) left)]\n")
+                self.root.after(2500, lambda: self._recheck_after_stop(remaining))
+            else:
+                # AP is gone (or we ran out of retries) — hand off to normal handler.
+                if out:
+                    self.log_queue.put(out)
+                if err:
+                    self.log_queue.put(err)
+                self.log_queue.put(f"[exit code {completed.returncode}]\n")
+                self.root.after(0, lambda: self._apply_instance_check_result(completed.returncode, out, err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _interrupt_local_process_group(self) -> None:
+        if not self.process or self.process.poll() is not None:
+            return
+        try:
+            os.killpg(os.getpgid(self.process.pid), signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            self.log_queue.put(
+                "[info] Unable to signal process group directly (permission denied); using create_ap --stop instead.\n"
+            )
+        except OSError as exc:
+            self.log_queue.put(f"[warn] Failed to signal process group: {exc}\n")
+
     def stop_ap(self) -> None:
         if not self.instance_check_done:
             messagebox.showwarning("create_ap", "Run instance check first (click 'Check instances').")
             return
 
-        if self.process and self.process.poll() is None:
-            try:
-                os.killpg(os.getpgid(self.process.pid), signal.SIGINT)
-            except ProcessLookupError:
-                pass
+        self._interrupt_local_process_group()
 
         if not self.create_ap_bin:
             messagebox.showerror("create_ap", "create_ap binary not found")
@@ -1070,7 +1115,12 @@ class CreateApGui:
 
         cmd = self._auth_prefix() + [self.create_ap_bin, "--stop", wifi]
         threading.Thread(target=self._run_command_and_log, args=(cmd,), daemon=True).start()
-        self.root.after(2000, self.check_running_instances)
+
+        # Disable buttons and start polling.  --stop returns immediately (it
+        # only sends SIGUSR1); the actual teardown can take several seconds.
+        self.instance_status.set("Stopping AP\u2026")
+        self._set_action_buttons_for_check(pending=True)
+        self.root.after(2500, lambda: self._recheck_after_stop())
 
     def show_running(self) -> None:
         if not self.create_ap_bin:
@@ -1357,12 +1407,7 @@ class CreateApGui:
             self.start_ap(skip_preflight=False)
             return
 
-        if self.process and self.process.poll() is None:
-            try:
-                os.killpg(os.getpgid(self.process.pid), signal.SIGINT)
-            except ProcessLookupError:
-                pass
-            self.process = None
+        self._interrupt_local_process_group()
 
         self.stop_ap()
         self.root.after(2200, lambda: self.start_ap(skip_preflight=False))
@@ -1382,6 +1427,10 @@ class CreateApGui:
 
 
 def main() -> None:
+    # Ignore SIGHUP so the GUI keeps running when the IDE/terminal is closed.
+    # The process was likely started from an IDE terminal; without this it would
+    # be killed the moment that terminal session ends.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     root = tk.Tk()
     CreateApGui(root)
     root.mainloop()
