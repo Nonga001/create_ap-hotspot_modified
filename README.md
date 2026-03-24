@@ -76,6 +76,9 @@ If you want the GUI launcher and desktop app entry/icon as well:
 ### Bridged Internet sharing:
     create_ap -m bridge wlan0 eth0 MyAccessPoint MyPassPhrase
 
+Note: bridge mode is intended for wired/uplink bridge scenarios. If your Internet uplink is Wi-Fi,
+use NAT mode instead (`-m nat`) to avoid route/connection drops.
+
 ### Bridged Internet sharing (pre-configured bridge interface):
     create_ap -m bridge wlan0 br0 MyAccessPoint MyPassPhrase
 
@@ -148,6 +151,12 @@ Run from the repository root:
 Or after installation:
 
     create_ap_gui
+
+After pulling updates, re-run:
+
+    sudo make install-gui
+
+This refreshes both `create_ap_gui` and `create_ap` from the current repository state.
 
 ### How the GUI works
 

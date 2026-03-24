@@ -452,6 +452,14 @@ class CreateApGui:
             elif not (Path("/sys/class/net") / internet).exists():
                 issues.append(f"Internet interface '{internet}' does not exist")
 
+            if self.share_method.get() == "bridge":
+                if internet and internet == wifi:
+                    issues.append("Bridge mode cannot use the same interface for WiFi and Internet")
+                elif internet and (Path("/sys/class/net") / internet / "wireless").exists():
+                    issues.append(
+                        "Bridge mode with a WiFi uplink is unstable on most adapters/drivers. Use NAT sharing instead"
+                    )
+
         if missing_tools:
             issues.append("Missing dependencies: " + ", ".join(missing_tools))
 

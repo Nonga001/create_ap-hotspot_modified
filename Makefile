@@ -16,7 +16,7 @@ install:
 	install -Dm644 bash_completion $(DESTDIR)$(PREFIX)/share/bash-completion/completions/create_ap
 	install -Dm644 README.md $(DESTDIR)$(PREFIX)/share/doc/create_ap/README.md
 
-install-gui:
+install-gui: install
 	install -Dm755 create_ap_gui.py $(DESTDIR)$(BINDIR)/create_ap_gui
 	install -Dm644 create_ap_gui.desktop $(DESTDIR)$(PREFIX)/share/applications/create_ap_gui.desktop
 	install -Dm644 create_ap_gui.svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/create_ap_gui.svg

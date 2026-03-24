@@ -1504,6 +1504,12 @@ if [[ "$SHARE_METHOD" != "none" ]] && ! is_interface $INTERNET_IFACE; then
     exit 1
 fi
 
+if [[ "$SHARE_METHOD" == "bridge" ]] && ! is_bridge_interface $INTERNET_IFACE && is_wifi_interface $INTERNET_IFACE; then
+    echo "ERROR: Bridge mode over a WiFi uplink (${INTERNET_IFACE}) is not supported reliably." >&2
+    echo "       Use '-m nat' instead to avoid route/connection drops." >&2
+    exit 1
+fi
+
 if [[ ${#SSID} -lt 1 || ${#SSID} -gt 32 ]]; then
     echo "ERROR: Invalid SSID length ${#SSID} (expected 1..32)" >&2
     exit 1
