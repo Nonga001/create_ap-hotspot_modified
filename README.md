@@ -135,6 +135,8 @@ The GUI is a wrapper around `create_ap` and lets you:
 * Toggle passphrase visibility while editing
 * Requires an instance check before Start/Stop is enabled
 
+For wireless-only setups, the GUI keeps the hotspot startable, but one radio doing both uplink and AP traffic will still limit throughput. If you have a second Wi-Fi adapter, use it for the hotspot for the best result.
+
 ### GUI setup
 
 Requirements:
@@ -166,8 +168,10 @@ When the GUI opens, it first checks whether another `create_ap` instance is alre
 * If another instance is found, the GUI shows it in the status line and prevents starting a second one by mistake.
 * Detected defaults are taken from the current system when possible:
 * WiFi interface: current connected wireless interface, or first wireless interface found
-* Internet interface: default route interface, or first non-loopback interface found
+* Internet interface: connected wireless interface, or the first wireless interface found
 * Driver: value from `create_ap.conf` if available, otherwise `nl80211`
+
+For the strongest wireless-only hotspot, use a second wireless adapter if you have one. Sharing one Wi-Fi radio for both the uplink and the broadcasted hotspot will always reduce throughput compared with a separate adapter.
 
 ### Main controls
 
@@ -209,7 +213,7 @@ Notes:
 * The GUI requires Python 3 with Tkinter.
 * Running `create_ap` needs root privileges. The GUI will try `pkexec` first, then `sudo`.
 * If `create_ap` is not installed system-wide, make sure the local `create_ap` script is executable.
-* `make install-gui` installs the launcher (`create_ap_gui`), desktop entry (`create_ap_gui.desktop`), and icon (`create_ap_gui`).
+* `make install-gui` installs the launcher (`create_ap_gui`), desktop entry (`create_ap_gui.desktop`), and icons (`create_ap_gui.svg`, `create_ap_gui.png`).
 
 
 ## License

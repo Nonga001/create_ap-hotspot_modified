@@ -9,6 +9,7 @@ import socket
 import signal
 import subprocess
 import tempfile
+import time
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -41,7 +42,7 @@ class CreateApGui:
         self.profile_listbox: tk.Listbox | None = None
 
         self.wifi_iface = tk.StringVar(value="wlan0")
-        self.internet_iface = tk.StringVar(value="eth0")
+        self.internet_iface = tk.StringVar(value="")
         self.share_method = tk.StringVar(value="nat")
         self.ssid = tk.StringVar(value="MyAccessPoint")
         self.passphrase = tk.StringVar(value="12345678")
@@ -88,6 +89,39 @@ class CreateApGui:
         ]
         return wifi_ifaces, all_ifaces
 
+    def _is_wireless_iface(self, iface: str) -> bool:
+        return (Path("/sys/class/net") / iface / "wireless").exists() or iface.startswith("wl")
+
+    def _wireless_radio_id(self, iface: str) -> str | None:
+        phy_link = Path("/sys/class/net") / iface / "phy80211"
+        if not phy_link.exists():
+            return None
+
+        try:
+            return str(phy_link.resolve())
+        except OSError:
+            return None
+
+    def _same_wireless_radio(self, iface_a: str, iface_b: str) -> bool:
+        if not iface_a or not iface_b:
+            return False
+        if iface_a == iface_b:
+            return True
+
+        radio_a = self._wireless_radio_id(iface_a)
+        radio_b = self._wireless_radio_id(iface_b)
+        return radio_a is not None and radio_a == radio_b
+
+    def _preferred_wifi_iface(self, internet_iface: str | None, wifi_ifaces: list[str]) -> str | None:
+        if not wifi_ifaces:
+            return None
+
+        for iface in wifi_ifaces:
+            if iface != internet_iface:
+                return iface
+
+        return wifi_ifaces[0]
+
     def _get_default_route_iface(self) -> str | None:
         if shutil.which("ip") is None:
             return None
@@ -108,6 +142,25 @@ class CreateApGui:
             if completed.returncode == 0 and "Connected to" in completed.stdout:
                 return iface
         return None
+
+    def _wifi_band(self, iface: str) -> str | None:
+        if shutil.which("iw") is None:
+            return None
+
+        completed = subprocess.run(["iw", "dev", iface, "link"], capture_output=True, text=True, check=False)
+        if completed.returncode != 0:
+            return None
+
+        match = regex.search(r"freq:\s*(\d+)", completed.stdout)
+        if not match:
+            return None
+
+        try:
+            freq = int(match.group(1))
+        except ValueError:
+            return None
+
+        return "5" if freq >= 4900 else "2.4"
 
     def _driver_from_configs(self) -> str | None:
         candidates = [Path("/etc/create_ap.conf"), Path(__file__).with_name("create_ap.conf")]
@@ -130,14 +183,21 @@ class CreateApGui:
 
     def _apply_system_defaults(self) -> None:
         wifi_ifaces, all_ifaces = self._list_interfaces()
+        connected_wifi = self._get_connected_wifi_iface(wifi_ifaces)
 
-        wifi_default = self._get_connected_wifi_iface(wifi_ifaces) or (wifi_ifaces[0] if wifi_ifaces else None)
-        internet_default = self._get_default_route_iface()
-        if internet_default is None:
-            for iface in all_ifaces:
-                if iface != "lo":
-                    internet_default = iface
-                    break
+        internet_default = connected_wifi or (wifi_ifaces[0] if wifi_ifaces else None)
+        wifi_default = self._preferred_wifi_iface(internet_default, wifi_ifaces)
+
+        if internet_default and wifi_default == internet_default and len(wifi_ifaces) > 1:
+            wifi_default = self._preferred_wifi_iface(None, [iface for iface in wifi_ifaces if iface != internet_default])
+
+        if wifi_default is None:
+            wifi_default = internet_default
+
+        if connected_wifi:
+            connected_band = self._wifi_band(connected_wifi)
+            if connected_band in {"2.4", "5"}:
+                self.freq_band.set(connected_band)
 
         driver_default = self._driver_from_configs()
         if driver_default is None:
@@ -406,7 +466,7 @@ class CreateApGui:
         wifi_ifaces, all_ifaces = self._list_interfaces()
 
         self.wifi_combo["values"] = wifi_ifaces or all_ifaces
-        self.internet_combo["values"] = all_ifaces
+        self.internet_combo["values"] = wifi_ifaces or all_ifaces
 
         if self.wifi_iface.get() not in self.wifi_combo["values"] and self.wifi_combo["values"]:
             self.wifi_iface.set(self.wifi_combo["values"][0])
@@ -435,6 +495,7 @@ class CreateApGui:
     def preflight_check(self, show_success: bool = False) -> bool:
         missing_tools = [name for name in self._required_tools() if shutil.which(name) is None]
         issues: list[str] = []
+        warnings: list[str] = []
 
         if not self.create_ap_bin:
             issues.append("create_ap binary was not found")
@@ -451,6 +512,16 @@ class CreateApGui:
                 issues.append("Internet interface is not selected")
             elif not (Path("/sys/class/net") / internet).exists():
                 issues.append(f"Internet interface '{internet}' does not exist")
+            elif not self._is_wireless_iface(internet):
+                issues.append("Select a wireless interface for the internet uplink")
+            elif self._same_wireless_radio(wifi, internet):
+                warnings.append(
+                    "The WiFi hotspot and internet uplink are on the same wireless radio. This will reduce speed, but the GUI will still start the hotspot. For best throughput, use a second wireless adapter."
+                )
+            else:
+                warnings.append(
+                    "Selected internet uplink is wireless. Hotspot traffic will share the same radio and can reduce speed; a second wireless adapter is more stable."
+                )
 
             if self.share_method.get() == "bridge":
                 if internet and internet == wifi:
@@ -470,6 +541,10 @@ class CreateApGui:
             return False
 
         self.log_queue.put("\n[Preflight passed]\n")
+        for warning in warnings:
+            self.log_queue.put(f"[Preflight warning] {warning}\n")
+        if warnings:
+            messagebox.showwarning("create_ap", "\n".join(warnings))
         if show_success:
             messagebox.showinfo("create_ap", "Preflight checks passed")
         return True
@@ -1056,6 +1131,32 @@ class CreateApGui:
         except Exception as exc:
             self.log_queue.put(f"Command failed: {exc}\n")
 
+    def _stop_ap_and_wait(self, timeout_seconds: float = 30.0) -> bool:
+        if not self.create_ap_bin:
+            return False
+
+        wifi = self._effective_running_iface()
+        if not wifi:
+            return False
+
+        cmd = self._auth_prefix() + [self.create_ap_bin, "--stop", wifi]
+        self._run_command_and_log(cmd)
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            completed = subprocess.run(
+                [self.create_ap_bin, "--list-running"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            running_ifaces = self._parse_running_instances(completed.stdout or "")
+            if wifi not in running_ifaces:
+                return True
+            time.sleep(1.5)
+
+        return False
+
     def _recheck_after_stop(self, attempts_left: int = 6) -> None:
         """Poll --list-running until the hotspot is gone, then update the UI.
 
@@ -1416,12 +1517,17 @@ class CreateApGui:
             return
 
         self._interrupt_local_process_group()
-
-        self.stop_ap()
-        self.root.after(2200, lambda: self.start_ap(skip_preflight=False))
+        stopped = self._stop_ap_and_wait()
+        if stopped:
+            self.start_ap(skip_preflight=False)
+        else:
+            messagebox.showwarning(
+                "create_ap",
+                "The hotspot is still shutting down. Try Apply changes again in a few seconds.",
+            )
 
     def on_close(self) -> None:
-        if self.process and self.process.poll() is None:
+        if (self.process and self.process.poll() is None) or self.external_running:
             answer = messagebox.askyesnocancel(
                 "create_ap",
                 "Hotspot is still running. Stop it before closing?",
@@ -1429,7 +1535,13 @@ class CreateApGui:
             if answer is None:
                 return
             if answer:
-                self.stop_ap()
+                stopped = self._stop_ap_and_wait()
+                if not stopped:
+                    messagebox.showwarning(
+                        "create_ap",
+                        "The hotspot is still shutting down. Leave the GUI open a little longer, then try again.",
+                    )
+                    return
 
         self.root.destroy()
 
