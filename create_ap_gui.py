@@ -116,11 +116,40 @@ class CreateApGui:
         if not wifi_ifaces:
             return None
 
+        if internet_iface:
+            # Prefer a WiFi iface on a different radio from the uplink when possible.
+            for iface in wifi_ifaces:
+                if iface == internet_iface:
+                    continue
+                if not self._same_wireless_radio(iface, internet_iface):
+                    return iface
+
         for iface in wifi_ifaces:
             if iface != internet_iface:
                 return iface
 
         return wifi_ifaces[0]
+
+    def _auto_select_hotspot_iface_for_uplink(self) -> None:
+        if self.share_method.get() == "none":
+            return
+
+        internet = self.internet_iface.get().strip()
+        if not internet:
+            return
+
+        wifi_values = [iface for iface in self.wifi_combo["values"] if self._is_wireless_iface(iface)]
+        if not wifi_values:
+            return
+
+        current_wifi = self.wifi_iface.get().strip()
+        should_adjust = not current_wifi or current_wifi == internet or self._same_wireless_radio(current_wifi, internet)
+        if not should_adjust:
+            return
+
+        preferred = self._preferred_wifi_iface(internet, wifi_values)
+        if preferred and preferred != current_wifi:
+            self.wifi_iface.set(preferred)
 
     def _get_default_route_iface(self) -> str | None:
         if shutil.which("ip") is None:
@@ -226,6 +255,7 @@ class CreateApGui:
         ttk.Label(cfg, text="Internet interface").grid(row=row, column=2, sticky=tk.W, padx=4, pady=4)
         self.internet_combo = ttk.Combobox(cfg, textvariable=self.internet_iface, state="readonly")
         self.internet_combo.grid(row=row, column=3, sticky=tk.EW, padx=4, pady=4)
+        self.internet_combo.bind("<<ComboboxSelected>>", lambda _: self._auto_select_hotspot_iface_for_uplink())
 
         row += 1
         ttk.Label(cfg, text="Share method").grid(row=row, column=0, sticky=tk.W, padx=4, pady=4)
@@ -476,6 +506,8 @@ class CreateApGui:
                 if candidate != self.wifi_iface.get():
                     self.internet_iface.set(candidate)
                     break
+
+        self._auto_select_hotspot_iface_for_uplink()
 
     def _auth_prefix(self) -> list[str]:
         if os.geteuid() == 0:
