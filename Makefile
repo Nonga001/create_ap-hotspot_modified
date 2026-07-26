@@ -5,8 +5,13 @@ BINDIR=$(PREFIX)/bin
 all:
 	@echo "Run 'make install' for installation."
 	@echo "Run 'make install-gui' for GUI installation."
+	@echo "Run 'make check' for quick validation."
 	@echo "Run 'make uninstall' for uninstallation."
 	@echo "Run 'make uninstall-gui' for GUI uninstallation."
+
+check:
+	bash -n create_ap fix_channel.sh cha12.sh
+	python3 -m py_compile create_ap_gui.py
 
 install:
 	install -Dm755 create_ap $(DESTDIR)$(BINDIR)/create_ap

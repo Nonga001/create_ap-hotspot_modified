@@ -17,6 +17,18 @@ import re as regex
 from tkinter import messagebox, ttk
 
 
+CHANNEL_CHOICES = [
+    "default",
+    *[str(c) for c in range(1, 14)],
+    "36", "40", "44", "48",
+    "52", "56", "60", "64",
+    "100", "104", "108", "112",
+    "116", "120", "124", "128",
+    "132", "136", "140", "144",
+    "149", "153", "157", "161", "165",
+]
+
+
 class CreateApGui:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -44,8 +56,8 @@ class CreateApGui:
         self.wifi_iface = tk.StringVar(value="wlan0")
         self.internet_iface = tk.StringVar(value="")
         self.share_method = tk.StringVar(value="nat")
-        self.ssid = tk.StringVar(value="MyAccessPoint")
-        self.passphrase = tk.StringVar(value="12345678")
+        self.ssid = tk.StringVar(value="Lantana")
+        self.passphrase = tk.StringVar(value="987654321...")
         self.channel = tk.StringVar(value="default")
         self.wpa_version = tk.StringVar(value="2")
         self.country = tk.StringVar(value="")
@@ -272,7 +284,7 @@ class CreateApGui:
         channel_combo = ttk.Combobox(
             cfg,
             textvariable=self.channel,
-            values=["default"] + [str(c) for c in range(1, 14)],
+            values=CHANNEL_CHOICES,
             state="readonly",
         )
         channel_combo.grid(row=row, column=3, sticky=tk.EW, padx=4, pady=4)

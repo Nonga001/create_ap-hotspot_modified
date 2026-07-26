@@ -154,11 +154,37 @@ Or after installation:
 
     create_ap_gui
 
+Default GUI hotspot profile in this fork:
+
+* SSID: `Lantana`
+* Passphrase: `987654321...`
+
 After pulling updates, re-run:
 
     sudo make install-gui
 
 This refreshes both `create_ap_gui` and `create_ap` from the current repository state.
+
+## Channel conflict helpers
+
+For setups where one wireless interface is used for both uplink and AP mode, channel conflicts are common.
+Use these helpers from the repository root:
+
+* `./fix_channel.sh [wifi_iface] [ssid] [target_channel] [hotspot_ssid] [hotspot_pass]`
+* `./cha12.sh [wifi_iface] [ssid] [bssid]`
+
+Examples:
+
+    ./fix_channel.sh wlp2s0 KONNECT 149 Lantana 987654321...
+    ./fix_channel.sh wlp2s0 KONNECT 11 Lantana 987654321...
+    ./cha12.sh wlp2s0 KONNECT 28:80:8A:2E:74:D8
+
+`fix_channel.sh` lets you pick either 2.4GHz or 5GHz AP entries, locks to the selected BSSID,
+and can start `create_ap` immediately on the matched channel/band.
+
+Quick validation after changes:
+
+    make check
 
 ### How the GUI works
 
